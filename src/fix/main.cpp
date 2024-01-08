@@ -19,7 +19,7 @@
 #include "platform.hpp"
 #include "version.hpp"
 
-#define UNSPECIFIED 0x200 // Should not be in byte range
+#define UNSPECIFIED 0x300 // Should not be in byte range
 
 #define BANK_SIZE 0x4000
 
@@ -151,6 +151,11 @@ enum MbcType {
 	TPP1_BATTERY_TIMER_MULTIRUMBLE = 0x10E, // Should not be possible
 	TPP1_BATTERY_TIMER_MULTIRUMBLE_RUMBLE = 0x10F,
 
+	// A high byte of 0x02 means RNBW, the low byte is the requested features
+	// This does not include SRAM, which is instead implied by a non-zero SRAM size
+	RNBW = 0x200,
+	RNBW_RAM = 0x201,
+
 	// Error values
 	MBC_NONE = UNSPECIFIED, // No MBC specified, do not act on it
 	MBC_BAD, // Specified MBC does not exist / syntax error
@@ -181,6 +186,8 @@ static void printAcceptedMBCNames(void)
 	fputs("\tTPP1_1.0+BATTERY+RUMBLE, TPP1_1.0+BATTERY+MULTIRUMBLE,\n", stderr);
 	fputs("\tTPP1_1.0+BATTERY+TIMER, TPP1_1.0+BATTERY+TIMER+RUMBLE,\n", stderr);
 	fputs("\tTPP1_1.0+BATTERY+TIMER+MULTIRUMBLE\n", stderr);
+
+	fputs("\n\tRNBW, RNBW+RAM\n", stderr);
 }
 
 static uint8_t tpp1Rev[2];
@@ -250,15 +257,25 @@ do { \
 		switch (*ptr++) {
 		case 'R': // ROM / ROM_ONLY
 		case 'r':
-			tryReadSlice("OM");
-			// Handle optional " ONLY"
-			while (*ptr == ' ' || *ptr == '\t' || *ptr == '_')
-				ptr++;
-			if (*ptr == 'O' || *ptr == 'o') {
-				ptr++;
-				tryReadSlice("NLY");
+			switch (*ptr++) {
+			case 'O':
+			case 'o':
+				tryReadSlice("M");
+				// Handle optional " ONLY"
+				while (*ptr == ' ' || *ptr == '\t' || *ptr == '_')
+					ptr++;
+				if (*ptr == 'O' || *ptr == 'o') {
+					ptr++;
+					tryReadSlice("NLY");
+				}
+				mbc = ROM;
+				break;
+			case 'N':
+			case 'n':
+				tryReadSlice("BW");
+				mbc = RNBW;
+				break;
 			}
-			mbc = ROM;
 			break;
 
 		case 'M': // MBC{1, 2, 3, 5, 6, 7} / MMM01
@@ -560,6 +577,11 @@ do { \
 			if (features & SENSOR)
 				return MBC_WRONG_FEATURES;
 			break;
+
+		case RNBW:
+			if (features & RAM)
+				mbc++;
+			break;
 		}
 
 		// Trim off trailing whitespace
@@ -661,6 +683,10 @@ static char const *mbcName(enum MbcType type)
 	case TPP1_BATTERY_TIMER_MULTIRUMBLE:
 	case TPP1_BATTERY_TIMER_MULTIRUMBLE_RUMBLE:
 		return "TPP1+BATTERY+TIMER+MULTIRUMBLE";
+	case RNBW:
+		return "RNBW";
+	case RNBW_RAM:
+		return "RNBW+RAM";
 
 	// Error values
 	case MBC_NONE:
@@ -933,6 +959,10 @@ static void processFile(int input, int output, char const *name, off_t fileSize)
 			// Cartridge type isn't directly actionable, translate it
 			byte = 0xBC;
 			// The other TPP1 identification bytes will be written below
+		} else if ((cartridgeType & 0xFF00) == RNBW) {
+			// Cartridge type isn't directly actionable, translate it
+			byte = 0xFA;
+			// The other RNBW identification bytes will be written below
 		}
 		overwriteByte(rom0, 0x147, byte, "cartridge type");
 	}
@@ -950,6 +980,11 @@ static void processFile(int input, int output, char const *name, off_t fileSize)
 			overwriteByte(rom0, 0x152, ramSize, "RAM size");
 
 		overwriteByte(rom0, 0x153, cartridgeType & 0xFF, "TPP1 feature flags");
+		// } else if ((cartridgeType & 0xFF00) == RNBW) {
+		// 	if (ramSize != UNSPECIFIED)
+		// 		overwriteByte(rom0, 0x149, ramSize | 0x80, "RAM size");
+		// 	else
+		// 		overwriteByte(rom0, 0x149, 0x80, "RAM size");
 	} else {
 		// Regular mappers
 
